@@ -311,7 +311,8 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
             else:
                 difference = new_balances[i] - ideal_balance
             fees[i] = _fee * difference / FEE_DENOMINATOR
-            self.admin_balances[i] += fees[i] * _admin_fee / FEE_DENOMINATOR
+            if _admin_fee > 0:
+                self.admin_balances[i] += fees[i] * _admin_fee / FEE_DENOMINATOR
             new_balances[i] -= fees[i]
         D2 = self.get_D_precisions(new_balances, amp)
 
@@ -415,7 +416,8 @@ def _exchange(i: int128, j: int128, dx: uint256) -> uint256:
     dy: uint256 = xp[j] - y
     dy_fee: uint256 = dy * self.fee / FEE_DENOMINATOR
     dy_admin_fee: uint256 = dy_fee * self.admin_fee / FEE_DENOMINATOR
-    self.admin_balances[j] += dy_admin_fee / precisions[j]
+    if dy_admin_fee > 0:
+        self.admin_balances[j] += dy_admin_fee / precisions[j]
 
     _dy: uint256 = (dy - dy_fee) / precisions[j]
 
@@ -504,7 +506,8 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
         else:
             difference = new_balances[i] - ideal_balance
         fees[i] = _fee * difference / FEE_DENOMINATOR
-        self.admin_balances[i] += fees[i] * _admin_fee / FEE_DENOMINATOR
+        if _admin_fee > 0:
+            self.admin_balances[i] += fees[i] * _admin_fee / FEE_DENOMINATOR
         new_balances[i] -= fees[i]
     D2: uint256 = self.get_D_precisions(new_balances, amp)
 
