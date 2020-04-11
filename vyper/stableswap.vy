@@ -9,6 +9,13 @@ contract USDT:
     def transfer(_to: address, _value: uint256): modifying
     def transferFrom(_from: address, _to: address, _value: uint256): modifying
 
+contract aToken:
+    def redeem(_amount: uint256): modifying
+
+
+contract aLendingPool:
+    def deposit(_reserve: address, _amount: uint256, _referralCode: bytes[2]): modifying
+
 
 # This can (and needs to) be changed at compile time
 N_COINS: constant(int128) = ___N_COINS___  # <- change
