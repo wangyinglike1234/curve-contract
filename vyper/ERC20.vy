@@ -2,6 +2,10 @@
 
 from vyper.interfaces import ERC20
 
+contract Curve:
+    def owner() -> address: constant
+
+
 implements: ERC20
 
 Transfer: event({_from: indexed(address), _to: indexed(address), _value: uint256})
@@ -37,6 +41,13 @@ def __init__(_name: string[64], _symbol: string[32], _decimals: uint256, _supply
 def set_minter(_minter: address):
     assert msg.sender == self.minter
     self.minter = _minter
+
+
+@public
+def set_name(_name: string[64], _symbol: string[32]):
+    assert Curve(self.minter).owner() == msg.sender
+    self.name = _name
+    self.symbol = _symbol
 
 
 @public
