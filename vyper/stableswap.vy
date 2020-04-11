@@ -126,9 +126,9 @@ def aave_deposit(_reserve: address, _amount: uint256, _referralCode: uint256):
 
     data: bytes[100] = concat(
         b'\xd2\xd0\xe0\x66',                        # ABI MethodID
-        convert(_reserve, bytes32),               # address
-        convert(_amount, bytes32),                # uint256
-        convert(_referralCode, bytes32)           # uint16
+        convert(_reserve, bytes32),                 # address
+        convert(_amount, bytes32),                  # uint256
+        convert(_referralCode, bytes32)             # uint16
     )
     raw_call(self.aave_lending_pool, data)
 
@@ -159,7 +159,7 @@ def A() -> uint256:
 
 @private
 @constant
-def get_D(xp: uint256[N_COINS]) -> uint256:
+def get_D(xp: uint256[N_COINS], amp: uint256) -> uint256:
     """
     D invariant calculation in non-overflowing integer operations
     iteratively
@@ -178,7 +178,7 @@ def get_D(xp: uint256[N_COINS]) -> uint256:
 
     Dprev: uint256 = 0
     D: uint256 = S
-    Ann: uint256 = self._A() * N_COINS
+    Ann: uint256 = amp * N_COINS
     for _i in range(255):
         D_P: uint256 = D
         for _x in xp:
@@ -197,11 +197,11 @@ def get_D(xp: uint256[N_COINS]) -> uint256:
 
 @private
 @constant
-def get_D_precisions(_balances: uint256[N_COINS]) -> uint256:
+def get_D_precisions(_balances: uint256[N_COINS], amp: uint256) -> uint256:
     xp: uint256[N_COINS] = PRECISION_MUL
     for i in range(N_COINS):
         xp[i] *= _balances[i]
-    return self.get_D(xp)
+    return self.get_D(xp, amp)
 
 
 @public
@@ -211,7 +211,7 @@ def get_virtual_price() -> uint256:
     Returns portfolio virtual price (for calculating profit)
     scaled up by 1e18
     """
-    D: uint256 = self.get_D_precisions(self.balances)
+    D: uint256 = self.get_D_precisions(self.balances, self._A())
     # D is in the units similar to DAI (e.g. converted to precision 1e18)
     # When balanced, D = n * x_u - total virtual value of the portfolio
     token_supply: uint256 = self.token.totalSupply()
@@ -228,13 +228,14 @@ def calc_token_amount(amounts: uint256[N_COINS], deposit: bool) -> uint256:
     Needed to prevent front-running, not for precise calculations!
     """
     _balances: uint256[N_COINS] = self.balances
-    D0: uint256 = self.get_D_precisions(_balances)
+    amp: uint256 = self._A()
+    D0: uint256 = self.get_D_precisions(_balances, amp)
     for i in range(N_COINS):
         if deposit:
             _balances[i] += amounts[i]
         else:
             _balances[i] -= amounts[i]
-    D1: uint256 = self.get_D_precisions(_balances)
+    D1: uint256 = self.get_D_precisions(_balances, amp)
     token_amount: uint256 = self.token.totalSupply()
     diff: uint256 = 0
     if deposit:
@@ -254,13 +255,14 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
     fees: uint256[N_COINS] = ZEROS
     _fee: uint256 = self.fee * N_COINS / (4 * (N_COINS - 1))
     _admin_fee: uint256 = self.admin_fee
+    amp: uint256 = self._A()
 
     token_supply: uint256 = self.token.totalSupply()
     # Initial invariant
     D0: uint256 = 0
     old_balances: uint256[N_COINS] = self.balances
     if token_supply > 0:
-        D0 = self.get_D_precisions(old_balances)
+        D0 = self.get_D_precisions(old_balances, amp)
     new_balances: uint256[N_COINS] = old_balances
 
     for i in range(N_COINS):
@@ -269,7 +271,7 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
         new_balances[i] = old_balances[i] + amounts[i]
 
     # Invariant after change
-    D1: uint256 = self.get_D_precisions(new_balances)
+    D1: uint256 = self.get_D_precisions(new_balances, amp)
     assert D1 > D0
 
     # We need to recalculate the invariant accounting for fees
@@ -287,7 +289,7 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
             fees[i] = _fee * difference / FEE_DENOMINATOR
             self.balances[i] = new_balances[i] - (fees[i] * _admin_fee / FEE_DENOMINATOR)
             new_balances[i] -= fees[i]
-        D2 = self.get_D_precisions(new_balances)
+        D2 = self.get_D_precisions(new_balances, amp)
     else:
         self.balances = new_balances
 
@@ -327,10 +329,11 @@ def get_y(i: int128, j: int128, x: uint256, xp: uint256[N_COINS]) -> uint256:
 
     assert (i != j) and (i >= 0) and (j >= 0) and (i < N_COINS) and (j < N_COINS)
 
-    D: uint256 = self.get_D(xp)
+    amp: uint256 = self._A()
+    D: uint256 = self.get_D(xp, amp)
     c: uint256 = D
     S_: uint256 = 0
-    Ann: uint256 = self._A() * N_COINS
+    Ann: uint256 = amp * N_COINS
 
     _x: uint256 = 0
     for _i in range(N_COINS):
@@ -464,13 +467,14 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
     assert token_supply > 0
     _fee: uint256 = self.fee * N_COINS / (4 * (N_COINS - 1))
     _admin_fee: uint256 = self.admin_fee
+    amp: uint256 = self._A()
 
     old_balances: uint256[N_COINS] = self.balances
     new_balances: uint256[N_COINS] = old_balances
-    D0: uint256 = self.get_D_precisions(old_balances)
+    D0: uint256 = self.get_D_precisions(old_balances, amp)
     for i in range(N_COINS):
         new_balances[i] -= amounts[i]
-    D1: uint256 = self.get_D_precisions(new_balances)
+    D1: uint256 = self.get_D_precisions(new_balances, amp)
     fees: uint256[N_COINS] = ZEROS
     for i in range(N_COINS):
         ideal_balance: uint256 = D1 * old_balances[i] / D0
@@ -482,7 +486,7 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
         fees[i] = _fee * difference / FEE_DENOMINATOR
         self.balances[i] = new_balances[i] - (fees[i] * _admin_fee / FEE_DENOMINATOR)
         new_balances[i] -= fees[i]
-    D2: uint256 = self.get_D_precisions(new_balances)
+    D2: uint256 = self.get_D_precisions(new_balances, amp)
 
     token_amount: uint256 = (D0 - D2) * token_supply / D0
     assert token_amount > 0
