@@ -1,4 +1,11 @@
 # (c) Curve.Fi, 2020
+#
+# TODO
+# * Change token contract name by admin
+# * Ramp A
+# * Dynamic fees
+# * Aave wrap/unwrap
+# * Admin fees Aave-compatible - balances work differently
 
 import ERC20m as ERC20m
 from vyper.interfaces import ERC20
@@ -11,10 +18,6 @@ contract USDT:
 
 contract aToken:
     def redeem(_amount: uint256): modifying
-
-
-contract aLendingPool:
-    def deposit(_reserve: address, _amount: uint256, _referralCode: uint256): modifying
 
 
 # This can (and needs to) be changed at compile time
@@ -41,6 +44,7 @@ admin_actions_delay: constant(uint256) = 3 * 86400
 
 # Events
 TokenExchange: event({buyer: indexed(address), sold_id: int128, tokens_sold: uint256, bought_id: int128, tokens_bought: uint256})
+TokenExchangeUnderlying: event({buyer: indexed(address), sold_id: int128, tokens_sold: uint256, bought_id: int128, tokens_bought: uint256})
 AddLiquidity: event({provider: indexed(address), token_amounts: uint256[N_COINS], fees: uint256[N_COINS], invariant: uint256, token_supply: uint256})
 RemoveLiquidity: event({provider: indexed(address), token_amounts: uint256[N_COINS], fees: uint256[N_COINS], token_supply: uint256})
 RemoveLiquidityImbalance: event({provider: indexed(address), token_amounts: uint256[N_COINS], fees: uint256[N_COINS], invariant: uint256, token_supply: uint256})
@@ -52,10 +56,14 @@ CommitNewParameters: event({deadline: indexed(timestamp), A: uint256, fee: uint2
 NewParameters: event({A: uint256, fee: uint256, admin_fee: uint256})
 
 coins: public(address[N_COINS])
+underlying_coins: public(address[N_COINS])
 balances: public(uint256[N_COINS])
 fee: public(uint256)  # fee * 1e10
 offpeg_fee_multiplier: public(uint256)  # * 1e10
 admin_fee: public(uint256)  # admin_fee * 1e10
+
+aave_lending_pool: address
+aave_referral: uint256
 
 max_admin_fee: constant(uint256) = 5 * 10 ** 9
 max_fee: constant(uint256) = 5 * 10 ** 9
@@ -72,7 +80,8 @@ future_owner: public(address)
 
 initial_A: public(uint256)
 future_A: public(uint256)
-future_A_time: public(uint256)
+initial_A_time: public(timestamp)
+future_A_time: public(timestamp)
 
 kill_deadline: timestamp
 kill_deadline_dt: constant(uint256) = 2 * 30 * 86400
@@ -81,7 +90,9 @@ is_killed: bool
 
 @public
 def __init__(_coins: address[N_COINS],
+             _underlying_coins: address[N_COINS],
              _pool_token: address,
+             _aave_lending_pool: address,
              _A: uint256, _fee: uint256):
     """
     _coins: Addresses of ERC20 conracts of coins (c-tokens) involved
@@ -93,6 +104,7 @@ def __init__(_coins: address[N_COINS],
         assert _coins[i] != ZERO_ADDRESS
         self.balances[i] = 0
     self.coins = _coins
+    self.underlying_coins = _underlying_coins
     self.initial_A = _A
     self.future_A = _A
     self.future_A_time = 0
@@ -102,6 +114,47 @@ def __init__(_coins: address[N_COINS],
     self.kill_deadline = block.timestamp + kill_deadline_dt
     self.is_killed = False
     self.token = ERC20m(_pool_token)
+    self.aave_lending_pool = _aave_lending_pool
+    self.aave_referral = 0
+
+
+@private
+def aave_deposit(_reserve: address, _amount: uint256, _referralCode: uint256):
+    # def deposit(_reserve: address, _amount: uint256, _referralCode: uint16): modifying
+    # Vyper cannot automatically make this ABI until uint16 arrives
+    assert _referralCode < 2 ** 16
+
+    data: bytes[100] = concat(
+        b'\xd2\xd0\xe0\x66',                        # ABI MethodID
+        convert(_reserve, bytes32),               # address
+        convert(_amount, bytes32),                # uint256
+        convert(_referralCode, bytes32)           # uint16
+    )
+    raw_call(self.aave_lending_pool, data)
+
+
+@constant
+@private
+def _A() -> uint256:
+    """
+    Handle ramping A up or down
+    """
+    t1: timestamp = self.future_A_time
+    A1: uint256 = self.future_A
+
+    if block.timestamp < t1:
+        A0: uint256 = self.initial_A
+        t0: timestamp = self.initial_A_time
+        return A0 + (A1 - A0) * (block.timestamp - t0) / (t1 - t0)
+
+    else:  # when t1 == 0 or block.timestamp >= t1
+        return A1
+
+
+@constant
+@public
+def A() -> uint256:
+    return self._A()
 
 
 @private
@@ -125,7 +178,7 @@ def get_D(xp: uint256[N_COINS]) -> uint256:
 
     Dprev: uint256 = 0
     D: uint256 = S
-    Ann: uint256 = self.A * N_COINS
+    Ann: uint256 = self._A() * N_COINS
     for _i in range(255):
         D_P: uint256 = D
         for _x in xp:
@@ -277,7 +330,7 @@ def get_y(i: int128, j: int128, x: uint256, xp: uint256[N_COINS]) -> uint256:
     D: uint256 = self.get_D(xp)
     c: uint256 = D
     S_: uint256 = 0
-    Ann: uint256 = self.A * N_COINS
+    Ann: uint256 = self._A() * N_COINS
 
     _x: uint256 = 0
     for _i in range(N_COINS):
@@ -312,8 +365,8 @@ def get_dy(i: int128, j: int128, dx: uint256) -> uint256:
     # dx and dy in c-units
     precisions: uint256[N_COINS] = PRECISION_MUL
     xp: uint256[N_COINS] = self.balances
-    for i in range(N_COINS):
-        xp[i] *= precisions[i]
+    for k in range(N_COINS):
+        xp[k] *= precisions[k]
 
     x: uint256 = xp[i] + dx * precisions[i]
     y: uint256 = self.get_y(i, j, x, xp)
@@ -329,8 +382,8 @@ def _exchange(i: int128, j: int128, dx: uint256) -> uint256:
 
     xp: uint256[N_COINS] = PRECISION_MUL
     precisions: uint256[N_COINS] = PRECISION_MUL
-    for i in range[N_COINS]:
-        xp[i] *= self.balances[i]
+    for k in range(N_COINS):
+        xp[k] *= self.balances[k]
 
     x: uint256 = xp[i] + dx * precisions[i]
     y: uint256 = self.get_y(i, j, x, xp)
@@ -360,38 +413,25 @@ def exchange(i: int128, j: int128, dx: uint256, min_dy: uint256):
 @public
 @nonreentrant('lock')
 def exchange_underlying(i: int128, j: int128, dx: uint256, min_dy: uint256):
-    rates: uint256[N_COINS] = self._current_rates()
-    precisions: uint256[N_COINS] = PRECISION_MUL
-    rate_i: uint256 = rates[i] / precisions[i]
-    rate_j: uint256 = rates[j] / precisions[j]
-    dx_: uint256 = dx * PRECISION / rate_i
-
-    dy_: uint256 = self._exchange(i, j, dx_, rates)
-    dy: uint256 = dy_ * rate_j / PRECISION
+    dy: uint256 = self._exchange(i, j, dx)
     assert dy >= min_dy, "Exchange resulted in fewer coins than expected"
-    use_lending: bool[N_COINS] = USE_LENDING
     tethered: bool[N_COINS] = TETHERED
 
-    ok: uint256 = 0
+    u_coin_i: address = self.underlying_coins[i]
+    u_coin_j: address = self.underlying_coins[j]
+    coin_j: address = self.coins[j]
+
     if tethered[i]:
-        USDT(self.underlying_coins[i]).transferFrom(msg.sender, self, dx)
+        USDT(u_coin_i).transferFrom(msg.sender, self, dx)
     else:
-        assert_modifiable(ERC20(self.underlying_coins[i])\
-            .transferFrom(msg.sender, self, dx))
-    if use_lending[i]:
-        ERC20(self.underlying_coins[i]).approve(self.coins[i], dx)
-        ok = cERC20(self.coins[i]).mint(dx)
-        if ok > 0:
-            raise "Could not mint coin"
-    if use_lending[j]:
-        ok = cERC20(self.coins[j]).redeem(dy_)
-        if ok > 0:
-            raise "Could not redeem coin"
+        assert_modifiable(ERC20(u_coin_i).transferFrom(msg.sender, self, dx))
+    ERC20(u_coin_i).approve(self.aave_lending_pool, dx)
+    self.aave_deposit(u_coin_i, dx, self.aave_referral)
+    aToken(coin_j).redeem(dy)
     if tethered[j]:
-        USDT(self.underlying_coins[j]).transfer(msg.sender, dy)
+        USDT(u_coin_j).transfer(msg.sender, dy)
     else:
-        assert_modifiable(ERC20(self.underlying_coins[j])\
-            .transfer(msg.sender, dy))
+        assert_modifiable(ERC20(u_coin_j).transfer(msg.sender, dy))
 
     log.TokenExchangeUnderlying(msg.sender, i, dx, j, dy)
 
@@ -402,19 +442,13 @@ def remove_liquidity(_amount: uint256, min_amounts: uint256[N_COINS]):
     total_supply: uint256 = self.token.totalSupply()
     amounts: uint256[N_COINS] = ZEROS
     fees: uint256[N_COINS] = ZEROS
-    tethered: bool[N_COINS] = TETHERED
-    use_lending: bool[N_COINS] = USE_LENDING
 
     for i in range(N_COINS):
         value: uint256 = self.balances[i] * _amount / total_supply
         assert value >= min_amounts[i], "Withdrawal resulted in fewer coins than expected"
         self.balances[i] -= value
         amounts[i] = value
-        if tethered[i] and not use_lending[i]:
-            USDT(self.coins[i]).transfer(msg.sender, value)
-        else:
-            assert_modifiable(cERC20(self.coins[i]).transfer(
-                msg.sender, value))
+        assert_modifiable(ERC20(self.coins[i]).transfer(msg.sender, value))
 
     self.token.burnFrom(msg.sender, _amount)  # Will raise if not enough
 
@@ -425,21 +459,18 @@ def remove_liquidity(_amount: uint256, min_amounts: uint256[N_COINS]):
 @nonreentrant('lock')
 def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint256):
     assert not self.is_killed
-    tethered: bool[N_COINS] = TETHERED
-    use_lending: bool[N_COINS] = USE_LENDING
 
     token_supply: uint256 = self.token.totalSupply()
     assert token_supply > 0
     _fee: uint256 = self.fee * N_COINS / (4 * (N_COINS - 1))
     _admin_fee: uint256 = self.admin_fee
-    rates: uint256[N_COINS] = self._current_rates()
 
     old_balances: uint256[N_COINS] = self.balances
     new_balances: uint256[N_COINS] = old_balances
-    D0: uint256 = self.get_D_mem(rates, old_balances)
+    D0: uint256 = self.get_D_precisions(old_balances)
     for i in range(N_COINS):
         new_balances[i] -= amounts[i]
-    D1: uint256 = self.get_D_mem(rates, new_balances)
+    D1: uint256 = self.get_D_precisions(new_balances)
     fees: uint256[N_COINS] = ZEROS
     for i in range(N_COINS):
         ideal_balance: uint256 = D1 * old_balances[i] / D0
@@ -451,17 +482,14 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
         fees[i] = _fee * difference / FEE_DENOMINATOR
         self.balances[i] = new_balances[i] - (fees[i] * _admin_fee / FEE_DENOMINATOR)
         new_balances[i] -= fees[i]
-    D2: uint256 = self.get_D_mem(rates, new_balances)
+    D2: uint256 = self.get_D_precisions(new_balances)
 
     token_amount: uint256 = (D0 - D2) * token_supply / D0
     assert token_amount > 0
     assert token_amount <= max_burn_amount, "Slippage screwed you"
 
     for i in range(N_COINS):
-        if tethered[i] and not use_lending[i]:
-            USDT(self.coins[i]).transfer(msg.sender, amounts[i])
-        else:
-            assert_modifiable(cERC20(self.coins[i]).transfer(msg.sender, amounts[i]))
+        assert_modifiable(ERC20(self.coins[i]).transfer(msg.sender, amounts[i]))
     self.token.burnFrom(msg.sender, token_amount)  # Will raise if not enough
 
     log.RemoveLiquidityImbalance(msg.sender, amounts, fees, D1, token_supply - token_amount)
@@ -547,17 +575,12 @@ def revert_transfer_ownership():
 def withdraw_admin_fees():
     assert msg.sender == self.owner
     _precisions: uint256[N_COINS] = PRECISION_MUL
-    tethered: bool[N_COINS] = TETHERED
-    use_lending: bool[N_COINS] = USE_LENDING
 
     for i in range(N_COINS):
         c: address = self.coins[i]
-        value: uint256 = cERC20(c).balanceOf(self) - self.balances[i]
+        value: uint256 = ERC20(c).balanceOf(self) - self.balances[i]
         if value > 0:
-            if tethered[i] and not use_lending[i]:
-                USDT(c).transfer(msg.sender, value)
-            else:
-                assert_modifiable(cERC20(c).transfer(msg.sender, value))
+            assert_modifiable(ERC20(c).transfer(msg.sender, value))
 
 
 @public
@@ -571,3 +594,10 @@ def kill_me():
 def unkill_me():
     assert msg.sender == self.owner
     self.is_killed = False
+
+
+@public
+def set_aave_referral(referral_code: uint256):
+    assert msg.sender == self.owner
+    assert referral_code < 2 ** 16  # uint16 check
+    self.aave_referral = referral_code
