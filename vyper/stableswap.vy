@@ -1,11 +1,11 @@
 # (c) Curve.Fi, 2020
 #
 # TODO
-# * Change token contract name by admin
+# + Change token contract name by admin
 # + Ramp A
 # * Dynamic fees
 # + Aave wrap/unwrap
-# * Admin fees Aave-compatible - balances work differently
+# + Admin fees Aave-compatible - balances work differently
 # * Make one-coin-removal functionality native
 
 import ERC20m as ERC20m
