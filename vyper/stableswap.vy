@@ -14,7 +14,7 @@ contract aToken:
 
 
 contract aLendingPool:
-    def deposit(_reserve: address, _amount: uint256, _referralCode: bytes[2]): modifying
+    def deposit(_reserve: address, _amount: uint256, _referralCode: uint256): modifying
 
 
 # This can (and needs to) be changed at compile time
