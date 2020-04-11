@@ -41,6 +41,7 @@ PRECISION_MUL: constant(uint256[N_COINS]) = ___PRECISION_MUL___
 
 
 admin_actions_delay: constant(uint256) = 3 * 86400
+min_ramp_time: constant(uint256) = 86400
 
 # Events
 TokenExchange: event({buyer: indexed(address), sold_id: int128, tokens_sold: uint256, bought_id: int128, tokens_bought: uint256})
@@ -51,9 +52,10 @@ RemoveLiquidityImbalance: event({provider: indexed(address), token_amounts: uint
 CommitNewAdmin: event({deadline: indexed(timestamp), admin: indexed(address)})
 NewAdmin: event({admin: indexed(address)})
 
-# XXX the admin events need to be reworked
-CommitNewParameters: event({deadline: indexed(timestamp), A: uint256, fee: uint256, admin_fee: uint256})
-NewParameters: event({A: uint256, fee: uint256, admin_fee: uint256})
+CommitNewFee: event({deadline: indexed(timestamp), fee: uint256, admin_fee: uint256})
+NewFee: event({fee: uint256, admin_fee: uint256})
+RampA: event({old_A: uint256, new_A: uint256, initial_time: timestamp, future_time: timestamp})
+StopRampA: event({A: uint256, t: timestamp})
 
 coins: public(address[N_COINS])
 underlying_coins: public(address[N_COINS])
@@ -107,6 +109,7 @@ def __init__(_coins: address[N_COINS],
     self.underlying_coins = _underlying_coins
     self.initial_A = _A
     self.future_A = _A
+    self.initial_A_time = 0
     self.future_A_time = 0
     self.fee = _fee
     self.admin_fee = 0
@@ -145,7 +148,11 @@ def _A() -> uint256:
     if block.timestamp < t1:
         A0: uint256 = self.initial_A
         t0: timestamp = self.initial_A_time
-        return A0 + (A1 - A0) * (block.timestamp - t0) / (t1 - t0)
+        # Expressions in uint256 cannot have negative numbers, thus "if"
+        if A1 > A0:
+            return A0 + (A1 - A0) * (block.timestamp - t0) / (t1 - t0)
+        else:
+            return A0 - (A0 - A1) * (block.timestamp - t0) / (t1 - t0)
 
     else:  # when t1 == 0 or block.timestamp >= t1
         return A1
@@ -501,39 +508,60 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
 
 ### Admin functions ###
 @public
-def commit_new_parameters(amplification: uint256,
-                          new_fee: uint256,
-                          new_admin_fee: uint256):
+def ramp_A(_future_A: uint256, _future_time: timestamp):
+    assert msg.sender == self.owner
+    assert _future_time >= block.timestamp + min_ramp_time
+
+    _initial_A: uint256 = self._A()
+    self.initial_A = _initial_A
+    self.future_A = _future_A
+    self.initial_A_time = block.timestamp
+    self.future_A_time = _future_time
+
+    log.RampA(_initial_A, _future_A, block.timestamp, _future_time)
+
+
+@public
+def stop_ramp_A():
+    assert msg.sender == self.owner
+
+    current_A: uint256 = self._A()
+    self.initial_A = current_A
+    self.future_A = current_A
+    self.initial_A_time = 0
+    self.future_A_time = 0
+
+    log.StopRampA(current_A, block.timestamp)
+
+
+@public
+def commit_new_fee(new_fee: uint256, new_admin_fee: uint256):
     assert msg.sender == self.owner
     assert self.admin_actions_deadline == 0
     assert new_admin_fee <= max_admin_fee
     assert new_fee <= max_fee
-    assert amplification <= max_A
 
     _deadline: timestamp = block.timestamp + admin_actions_delay
     self.admin_actions_deadline = _deadline
-    self.future_A = amplification
     self.future_fee = new_fee
     self.future_admin_fee = new_admin_fee
 
-    log.CommitNewParameters(_deadline, amplification, new_fee, new_admin_fee)
+    log.CommitNewFee(_deadline, new_fee, new_admin_fee)
 
 
 @public
-def apply_new_parameters():
+def apply_new_fee():
     assert msg.sender == self.owner
     assert self.admin_actions_deadline <= block.timestamp\
         and self.admin_actions_deadline > 0
 
     self.admin_actions_deadline = 0
-    _A: uint256 = self.future_A
     _fee: uint256 = self.future_fee
     _admin_fee: uint256 = self.future_admin_fee
-    self.A = _A
     self.fee = _fee
     self.admin_fee = _admin_fee
 
-    log.NewParameters(_A, _fee, _admin_fee)
+    log.NewFee(_fee, _admin_fee)
 
 
 @public
