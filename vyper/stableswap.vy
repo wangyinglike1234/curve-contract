@@ -299,6 +299,7 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
     tethered: bool[N_COINS] = TETHERED
     fees: uint256[N_COINS] = ZEROS
     _fee: uint256 = self.fee * N_COINS / (4 * (N_COINS - 1))
+    _feemul: uint256 = self.offpeg_fee_multiplier
     _admin_fee: uint256 = self.admin_fee
     amp: uint256 = self._A()
 
@@ -319,6 +320,8 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
     D1: uint256 = self.get_D_precisions(new_balances, amp)
     assert D1 > D0
 
+    ys: uint256 = (D0 + D1) / N_COINS
+
     # We need to recalculate the invariant accounting for fees
     # to calculate fair user's share
     D2: uint256 = D1
@@ -331,7 +334,8 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
                 difference = ideal_balance - new_balances[i]
             else:
                 difference = new_balances[i] - ideal_balance
-            fees[i] = _fee * difference / FEE_DENOMINATOR  # XXX
+            xs: uint256 = old_balances[i] + new_balances[i]
+            fees[i] = self._dynamic_fee(xs, ys, _fee, _feemul) * difference / FEE_DENOMINATOR
             if _admin_fee > 0:
                 self.admin_balances[i] += fees[i] * _admin_fee / FEE_DENOMINATOR
             new_balances[i] -= fees[i]
@@ -513,6 +517,7 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
     token_supply: uint256 = self.token.totalSupply()
     assert token_supply > 0
     _fee: uint256 = self.fee * N_COINS / (4 * (N_COINS - 1))
+    _feemul: uint256 = self.offpeg_fee_multiplier
     _admin_fee: uint256 = self.admin_fee
     amp: uint256 = self._A()
 
@@ -522,6 +527,7 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
     for i in range(N_COINS):
         new_balances[i] -= amounts[i]
     D1: uint256 = self.get_D_precisions(new_balances, amp)
+    ys: uint256 = (D0 + D1) / N_COINS
     fees: uint256[N_COINS] = ZEROS
     for i in range(N_COINS):
         ideal_balance: uint256 = D1 * old_balances[i] / D0
@@ -530,7 +536,8 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
             difference = ideal_balance - new_balances[i]
         else:
             difference = new_balances[i] - ideal_balance
-        fees[i] = _fee * difference / FEE_DENOMINATOR  # XXX
+        xs: uint256 = new_balances[i] + old_balances[i]
+        fees[i] = self._dynamic_fee(xs, ys, _fee, _feemul) * difference / FEE_DENOMINATOR
         if _admin_fee > 0:
             self.admin_balances[i] += fees[i] * _admin_fee / FEE_DENOMINATOR
         new_balances[i] -= fees[i]
