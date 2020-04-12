@@ -54,8 +54,8 @@ RemoveLiquidityImbalance: event({provider: indexed(address), token_amounts: uint
 CommitNewAdmin: event({deadline: indexed(timestamp), admin: indexed(address)})
 NewAdmin: event({admin: indexed(address)})
 
-CommitNewFee: event({deadline: indexed(timestamp), fee: uint256, admin_fee: uint256})
-NewFee: event({fee: uint256, admin_fee: uint256})
+CommitNewFee: event({deadline: indexed(timestamp), fee: uint256, admin_fee: uint256, offpeg_fee_multiplier: uint256})
+NewFee: event({fee: uint256, admin_fee: uint256, offpeg_fee_multiplier: uint256})
 RampA: event({old_A: uint256, new_A: uint256, initial_time: timestamp, future_time: timestamp})
 StopRampA: event({A: uint256, t: timestamp})
 
@@ -63,7 +63,7 @@ coins: public(address[N_COINS])
 underlying_coins: public(address[N_COINS])
 admin_balances: public(uint256[N_COINS])
 fee: public(uint256)  # fee * 1e10
-offpeg_fee_multiplier: public(uint256)  # * 1e10; should be >=1e10
+offpeg_fee_multiplier: public(uint256)  # * 1e10
 admin_fee: public(uint256)  # admin_fee * 1e10
 
 aave_lending_pool: address
@@ -80,6 +80,7 @@ admin_actions_deadline: public(timestamp)
 transfer_ownership_deadline: public(timestamp)
 future_fee: public(uint256)
 future_admin_fee: public(uint256)
+future_offpeg_fee_multiplier: public(uint256)  # * 1e10
 future_owner: public(address)
 
 initial_A: public(uint256)
@@ -174,8 +175,10 @@ def _dynamic_fee(xpi: uint256, xpj: uint256, _fee: uint256, _feemul: uint256) ->
     if _feemul <= FEE_DENOMINATOR:
         return _fee
     else:
+        xps2: uint256 = xpi + xpj
+        xps2 *= xps2  # Doing just ** 2 can overflow apparently
         return (_feemul * _fee) / (
-            (_feemul - FEE_DENOMINATOR) * 4 * xpi * xpj / (xpi + xpj) ** 2 + \
+            (_feemul - FEE_DENOMINATOR) * 4 * xpi * xpj / xps2 + \
             FEE_DENOMINATOR)
 
 
@@ -584,18 +587,20 @@ def stop_ramp_A():
 
 
 @public
-def commit_new_fee(new_fee: uint256, new_admin_fee: uint256):
+def commit_new_fee(new_fee: uint256, new_admin_fee: uint256, new_offpeg_fee_multiplier: uint256):
     assert msg.sender == self.owner
     assert self.admin_actions_deadline == 0
     assert new_admin_fee <= max_admin_fee
     assert new_fee <= max_fee
+    assert new_offpeg_fee_multiplier * new_fee <= max_fee * FEE_DENOMINATOR
 
     _deadline: timestamp = block.timestamp + admin_actions_delay
     self.admin_actions_deadline = _deadline
     self.future_fee = new_fee
     self.future_admin_fee = new_admin_fee
+    self.future_offpeg_fee_multiplier = new_offpeg_fee_multiplier
 
-    log.CommitNewFee(_deadline, new_fee, new_admin_fee)
+    log.CommitNewFee(_deadline, new_fee, new_admin_fee, new_offpeg_fee_multiplier)
 
 
 @public
@@ -607,10 +612,12 @@ def apply_new_fee():
     self.admin_actions_deadline = 0
     _fee: uint256 = self.future_fee
     _admin_fee: uint256 = self.future_admin_fee
+    _fml: uint256 = self.future_offpeg_fee_multiplier
     self.fee = _fee
     self.admin_fee = _admin_fee
+    self.offpeg_fee_multiplier = _fml
 
-    log.NewFee(_fee, _admin_fee)
+    log.NewFee(_fee, _admin_fee, _fml)
 
 
 @public
