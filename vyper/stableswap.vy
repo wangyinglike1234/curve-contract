@@ -51,6 +51,7 @@ TokenExchangeUnderlying: event({buyer: indexed(address), sold_id: int128, tokens
 AddLiquidity: event({provider: indexed(address), token_amounts: uint256[N_COINS], fees: uint256[N_COINS], invariant: uint256, token_supply: uint256})
 RemoveLiquidity: event({provider: indexed(address), token_amounts: uint256[N_COINS], fees: uint256[N_COINS], token_supply: uint256})
 RemoveLiquidityImbalance: event({provider: indexed(address), token_amounts: uint256[N_COINS], fees: uint256[N_COINS], invariant: uint256, token_supply: uint256})
+RemoveLiquidityOne: event({provider: indexed(address), token_amount: uint256, coin_amount: uint256})
 CommitNewAdmin: event({deadline: indexed(timestamp), admin: indexed(address)})
 NewAdmin: event({admin: indexed(address)})
 
@@ -457,6 +458,69 @@ def get_y_D(A: uint256, i: int128, xp: uint256[N_COINS], D: uint256) -> uint256:
             if y_prev - y <= 1:
                 break
     return y
+
+
+@private
+@constant
+def _calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> uint256:
+    # First, need to calculate
+    # * Get current D
+    # * Solve Eqn against y_i for D - _token_amount
+    A: uint256 = self._A()
+    _fee: uint256 = self.fee * N_COINS / (4 * (N_COINS - 1))
+    feemul: uint256 = self.offpeg_fee_multiplier
+    precisions: uint256[N_COINS] = PRECISION_MUL
+    total_supply: uint256 = self.token.totalSupply()
+
+    xp: uint256[N_COINS] = self._balances()
+    S: uint256 = 0
+    for j in range(N_COINS):
+        xp[j] *= precisions[j]
+        S += xp[j]
+
+    D0: uint256 = self.get_D(xp, A)
+    D1: uint256 = D0 - _token_amount * D0 / total_supply
+    xp_reduced: uint256[N_COINS] = xp
+    ys: uint256 = (D0 + D1) / (2 * N_COINS)
+
+    new_y: uint256 = self.get_y_D(A, i, xp, D1)
+
+    for j in range(N_COINS):
+        dx_expected: uint256 = 0
+        xavg: uint256 = 0
+        if j == i:
+            dx_expected = xp[j] * D1 / D0 - new_y
+            xavg = (xp[j] + new_y) / 2
+        else:
+            dx_expected = xp[j] - xp[j] * D1 / D0
+            xavg = xp[j]
+        xp_reduced[j] -= self._dynamic_fee(xavg, ys, _fee, feemul) * dx_expected / FEE_DENOMINATOR
+
+    dy: uint256 = xp_reduced[i] - self.get_y_D(A, i, xp_reduced, D1)
+    dy = dy / precisions[i]
+
+    return dy
+
+
+@public
+@constant
+def calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> uint256:
+    return self._calc_withdraw_one_coin(_token_amount, i)
+
+
+@public
+@nonreentrant('lock')
+def remove_liquidity_one_coin(_token_amount: uint256, i: int128, min_uamount: uint256):
+    """
+    Remove _amount of liquidity all in a form of coin i
+    """
+    dy: uint256 = self._calc_withdraw_one_coin(_token_amount, i)
+    assert dy >= min_uamount, "Not enough coins removed"
+
+    self.token.burnFrom(msg.sender, _token_amount)
+    assert_modifiable(ERC20(self.coins[i]).transfer(msg.sender, dy))
+
+    log.RemoveLiquidityOne(msg.sender, _token_amount, dy)
 
 
 @public
