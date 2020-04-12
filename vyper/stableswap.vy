@@ -62,7 +62,7 @@ coins: public(address[N_COINS])
 underlying_coins: public(address[N_COINS])
 admin_balances: public(uint256[N_COINS])
 fee: public(uint256)  # fee * 1e10
-offpeg_fee_multiplier: public(uint256)  # * 1e10
+offpeg_fee_multiplier: public(uint256)  # * 1e10; should be >=1e10
 admin_fee: public(uint256)  # admin_fee * 1e10
 
 aave_lending_pool: address
@@ -114,6 +114,7 @@ def __init__(_coins: address[N_COINS],
     self.initial_A_time = 0
     self.future_A_time = 0
     self.fee = _fee
+    self.offpeg_fee_multiplier = 0
     self.admin_fee = 0
     self.owner = msg.sender
     self.kill_deadline = block.timestamp + kill_deadline_dt
@@ -164,6 +165,26 @@ def _A() -> uint256:
 @public
 def A() -> uint256:
     return self._A()
+
+
+@constant
+@private
+def _dynamic_fee(xpi: uint256, xpj: uint256, _fee: uint256, _feemul: uint256) -> uint256:
+    if _feemul <= FEE_DENOMINATOR:
+        return _fee
+    else:
+        return (_feemul * _fee) / (
+            (_feemul - FEE_DENOMINATOR) * 4 * xpi * xpj / (xpi + xpj) ** 2 + \
+            FEE_DENOMINATOR)
+
+
+@constant
+@public
+def dynamic_fee(i: int128, j: int128) -> uint256:
+    precisions: uint256[N_COINS] = PRECISION_MUL
+    xpi: uint256 = (ERC20(self.coins[i]).balanceOf(self) - self.admin_balances[i]) * precisions[i]
+    xpj: uint256 = (ERC20(self.coins[j]).balanceOf(self) - self.admin_balances[j]) * precisions[j]
+    return self._dynamic_fee(xpi, xpj, self.fee, self.offpeg_fee_multiplier)
 
 
 @constant
@@ -310,7 +331,7 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
                 difference = ideal_balance - new_balances[i]
             else:
                 difference = new_balances[i] - ideal_balance
-            fees[i] = _fee * difference / FEE_DENOMINATOR
+            fees[i] = _fee * difference / FEE_DENOMINATOR  # XXX
             if _admin_fee > 0:
                 self.admin_balances[i] += fees[i] * _admin_fee / FEE_DENOMINATOR
             new_balances[i] -= fees[i]
@@ -397,7 +418,9 @@ def get_dy(i: int128, j: int128, dx: uint256) -> uint256:
     x: uint256 = xp[i] + dx * precisions[i]
     y: uint256 = self.get_y(i, j, x, xp)
     dy: uint256 = (xp[j] - y) / precisions[j]
-    _fee: uint256 = self.fee * dy / FEE_DENOMINATOR
+    _fee: uint256 = self._dynamic_fee(
+            (xp[i] + x) / 2, (xp[j] + y) / 2, self.fee, self.offpeg_fee_multiplier
+        ) * dy / FEE_DENOMINATOR
     return dy - _fee
 
 
@@ -414,7 +437,9 @@ def _exchange(i: int128, j: int128, dx: uint256) -> uint256:
     x: uint256 = xp[i] + dx * precisions[i]
     y: uint256 = self.get_y(i, j, x, xp)
     dy: uint256 = xp[j] - y
-    dy_fee: uint256 = dy * self.fee / FEE_DENOMINATOR
+    dy_fee: uint256 = dy * self._dynamic_fee(
+            (xp[i] + x) / 2, (xp[j] + y) / 2, self.fee, self.offpeg_fee_multiplier
+        ) / FEE_DENOMINATOR
     dy_admin_fee: uint256 = dy_fee * self.admin_fee / FEE_DENOMINATOR
     if dy_admin_fee > 0:
         self.admin_balances[j] += dy_admin_fee / precisions[j]
@@ -505,7 +530,7 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
             difference = ideal_balance - new_balances[i]
         else:
             difference = new_balances[i] - ideal_balance
-        fees[i] = _fee * difference / FEE_DENOMINATOR
+        fees[i] = _fee * difference / FEE_DENOMINATOR  # XXX
         if _admin_fee > 0:
             self.admin_balances[i] += fees[i] * _admin_fee / FEE_DENOMINATOR
         new_balances[i] -= fees[i]
