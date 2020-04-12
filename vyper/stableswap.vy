@@ -3,10 +3,11 @@
 # TODO
 # + Change token contract name by admin
 # + Ramp A
-# * Dynamic fees
+# + Dynamic fees
 # + Aave wrap/unwrap
 # + Admin fees Aave-compatible - balances work differently
 # * Make one-coin-removal functionality native
+# * Tests
 
 import ERC20m as ERC20m
 from vyper.interfaces import ERC20
