@@ -8,6 +8,8 @@ pytestmark = [
     pytest.mark.skip_pool("compound", "usdt")
 ]
 
+ETH_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+
 
 class StateMachine:
     """
@@ -51,7 +53,8 @@ class StateMachine:
         # perform a swap using wrapped coins
         send, recv = self._min_max()
         amount = int(10**self.decimals[send] * st_pct)
-        self.swap.exchange(send, recv, amount, 0, {'from': self.alice})
+        value = amount if self.coins[send] == ETH_ADDRESS else 0
+        self.swap.exchange(send, recv, amount, 0, {'from': self.alice, 'value': value})
 
     def rule_exchange_underlying(self, st_pct):
         """
@@ -63,7 +66,8 @@ class StateMachine:
 
         send, recv = self._min_max()
         amount = int(10**self.decimals[send] * st_pct)
-        self.swap.exchange_underlying(send, recv, amount, 0, {'from': self.alice})
+        value = amount if self.coins[send] == ETH_ADDRESS else 0
+        self.swap.exchange_underlying(send, recv, amount, 0, {'from': self.alice, 'value': value})
 
     def rule_remove_one_coin(self, st_pct):
         """
@@ -114,6 +118,7 @@ def test_number_always_go_up(
     state_machine,
     swap,
     alice,
+    bob,
     underlying_coins,
     wrapped_coins,
     wrapped_decimals,
@@ -123,9 +128,13 @@ def test_number_always_go_up(
     set_fees(10**7, 0)
 
     for underlying, wrapped in zip(underlying_coins, wrapped_coins):
-        underlying._mint_for_testing(alice, 10**18 * base_amount, {'from': alice})
+        amount = 10**18 * base_amount
+        if underlying == ETH_ADDRESS:
+            bob.transfer(alice, amount)
+        else:
+            underlying._mint_for_testing(alice, amount, {'from': alice})
         if underlying != wrapped:
-            wrapped._mint_for_testing(alice, 10**18 * base_amount, {'from': alice})
+            wrapped._mint_for_testing(alice, amount, {'from': alice})
 
     state_machine(
         StateMachine,
