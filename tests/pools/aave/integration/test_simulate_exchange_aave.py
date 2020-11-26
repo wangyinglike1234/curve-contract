@@ -4,7 +4,7 @@ from hypothesis import settings
 from simulation import Curve
 
 # do not run this test on pools without lending or meta pools
-pytestmark = [pytest.mark.lending, pytest.mark.skip_meta, pytest.mark.skip_pool("aave")]
+pytestmark = [pytest.mark.lending, pytest.mark.skip_meta]
 
 
 @given(
@@ -18,6 +18,7 @@ def test_simulated_exchange(
     bob,
     underlying_coins,
     wrapped_coins,
+    wrapped_decimals,
     swap,
     pool_data,
     n_coins,
@@ -38,55 +39,39 @@ def test_simulated_exchange(
     """
 
     set_fees(10**7, 0)
-    coin_data = pool_data['coins']
 
     # add initial pool liquidity
     initial_liquidity = []
-    for underlying, wrapped, data in zip(underlying_coins, wrapped_coins, coin_data):
-        amount = 1000 * 10 ** data['decimals']
+    for underlying, wrapped, decimals in zip(underlying_coins, wrapped_coins, wrapped_decimals):
+        amount = 1000 * 10 ** decimals
         underlying._mint_for_testing(alice, amount, {'from': alice})
-
-        if data.get("wrapped_decimals"):
-
-            underlying.approve(wrapped, amount, {'from': alice})
-            wrapped.mint(amount, {'from': alice})
-
-        amount = wrapped.balanceOf(alice)
+        underlying.approve(swap, amount, {'from': alice})
         initial_liquidity.append(amount // 10)
-        wrapped.approve(swap, amount // 10, {'from': alice})
 
-    swap.add_liquidity(initial_liquidity, 0, {'from': alice})
+    swap.add_liquidity(initial_liquidity, 0, True, {'from': alice})
 
     # initialize our python model using the same parameters as the contract
     balances = [swap.balances(i) for i in range(n_coins)]
     rates = []
-    for (coin, data) in zip(wrapped_coins, pool_data['coins']):
-        if data.get("wrapped_decimals"):
-            rate = coin.get_rate()
-        else:
-            rate = 10 ** 18
-
-        precision = 10 ** (18-data['decimals'])
+    for decimals in wrapped_decimals:
+        rate = 10 ** 18
+        precision = 10 ** (18-decimals)
         rates.append(rate * precision)
     curve_model = Curve(2 * 360, balances, n_coins, rates)
 
-    for coin, data in zip(underlying_coins, coin_data):
+    for coin, decimals in zip(underlying_coins, wrapped_decimals):
         # Fund bob with $100 of each coin and approve swap contract
-        amount = 100 * 10 ** data['decimals']
+        amount = 100 * 10 ** decimals
         coin._mint_for_testing(bob, amount, {'from': alice})
         coin.approve(swap, amount, {'from': bob})
 
     # Start trading!
-    rate_mul = [10**i['decimals'] for i in coin_data]
+    rate_mul = [10**i for i in wrapped_decimals]
     while st_coin:
-        # Tune exchange rates
-        for i, (cc, data) in enumerate(zip(wrapped_coins, coin_data)):
-            if data.get("wrapped_decimals"):
-                rate = int(cc.get_rate() * 1.0001)
-                cc.set_exchange_rate(rate, {'from': alice})
-                curve_model.p[i] = rate * (10 ** (18-data['decimals']))
-
-        chain.sleep(3600)
+        # Increase aToken balances by 1% to simulate accrued interest
+        for i, (coin, decimals) in enumerate(zip(wrapped_coins, wrapped_decimals)):
+            coin._mint_for_testing(swap, coin.balanceOf(swap) // 100, {'from': alice})
+            curve_model.x[i] = int(curve_model.x[i] * 1.01)
 
         # Simulate the exchange
         old_virtual_price = swap.get_virtual_price()
